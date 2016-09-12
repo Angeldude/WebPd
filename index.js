@@ -19,23 +19,22 @@
  */
 
 var _ = require('underscore')
-  , pdfu = require('pd-fileutils')
+  , pdfu = require('pd-fileutils.parser')
   , Patch = require('./lib/core/Patch')
+  , Abstraction = require('./lib/core/Abstraction')
   , PdObject = require('./lib/core/PdObject')
-  , utils = require('./lib/core/utils')
-  , portlets = require('./lib/objects/portlets')
-  , waa = require('./lib/waa')
+  , mixins = require('./lib/core/mixins')
+  , errors = require('./lib/core/errors')
+  , portlets = require('./lib/waa/portlets')
+  , waa = require('./lib/waa/interfaces')
   , pdGlob = require('./lib/global')
   , interfaces = require('./lib/core/interfaces')
-  , patchIds = _.extend({}, utils.UniqueIdsMixin)
+  , patchIds = _.extend({}, mixins.UniqueIdsMixin)
 
 // Various initializations
-require('./lib/objects').declareObjects(pdGlob.library)
+require('./lib/index').declareObjects(pdGlob.library)
 
 var Pd = module.exports = {
-
-  // Returns the current sample rate
-  getSampleRate: function() { return pdGlob.settings.sampleRate },
 
   // Start dsp
   start: function(opts) {
@@ -59,14 +58,13 @@ var Pd = module.exports = {
       }
 
       if (opts.storage) pdGlob.storage = opts.storage
-      else if (typeof window !== 'undefined') 
+      else if (typeof window !== 'undefined')
         pdGlob.storage = new waa.Storage()
       else pdGlob.storage = interfaces.Storage
 
 
       pdGlob.audio.start()
-      for (var patchId in pdGlob.patches)
-        pdGlob.patches[patchId].start()
+      _.values(pdGlob.patches).forEach(function(patch) { patch.start() })
       pdGlob.isStarted = true
     }
   },
@@ -75,14 +73,16 @@ var Pd = module.exports = {
   stop: function() {
     if (pdGlob.isStarted) {
       pdGlob.isStarted = false
-      for (var patchId in pdGlob.patches)
-        pdGlob.patches[patchId].stop()
+      _.values(pdGlob.patches).forEach(function(patch) { patch.stop() })
       pdGlob.audio.stop()
     }
   },
 
   // Returns true if the dsp is started, false otherwise
   isStarted: function() { return pdGlob.isStarted },
+
+  // Returns the audio engine
+  getAudio: function() { return pdGlob.audio },
 
   // Send a message to a named receiver inside the graph
   send: function(name, args) {
@@ -99,11 +99,17 @@ var Pd = module.exports = {
   registerAbstraction: function(name, patchData) {
     if (_.isString(patchData)) patchData = pdfu.parse(patchData)
     var CustomObject = function(patch, id, args) {
-      var patch = new Patch(patch, id, args)
+      var patch = new Abstraction(patch, id, args)
+      patch.patchId = patchIds._generateId()
       Pd._preparePatch(patch, patchData)
       return patch
     }
-    CustomObject.prototype = Patch.prototype
+    CustomObject.prototype = Abstraction.prototype
+    this.registerExternal(name, CustomObject)
+  },
+
+  // Register a custom object as `name`. `CustomObject` is a subclass of `core.PdObject`.
+  registerExternal: function(name, CustomObject) {
     pdGlob.library[name] = CustomObject
   },
 
@@ -122,14 +128,17 @@ var Pd = module.exports = {
   },
 
   // Loads a patch from a string (Pd file), or from an object (pd.json)
-  // TODO : problems of scheduling on load, for example executing [loadbang] ???
-  //         should we use the `futureTime` hack? 
   loadPatch: function(patchData) {
     var patch = this._createPatch()
-    if (_.isString(patchData)) patchData = pdfu.parse(patchData)
+    if (_.isString(patchData)) patchData = this.parsePatch(patchData)
     this._preparePatch(patch, patchData)
     if (pdGlob.isStarted) patch.start()
     return patch
+  },
+
+  parsePatch: function(patchData) {
+    if (_.isString(patchData)) patchData = pdfu.parse(patchData)
+    return patchData
   },
 
   _createPatch: function() {
@@ -142,20 +151,26 @@ var Pd = module.exports = {
   // TODO: handling graph better? But ... what is graph :?
   _preparePatch: function(patch, patchData) {
     var createdObjs = {}
+      , errorList = []
 
     // Creating nodes
     patchData.nodes.forEach(function(nodeData) {
       var proto = nodeData.proto
         , obj
-      if (proto === 'graph') {
-        var arrayNodeData = nodeData.subpatch.nodes[0]
-        obj = patch._createObject('array', arrayNodeData.args || [])
-        obj.setData(new Float32Array(arrayNodeData.data), true)
-        proto = 'array'
-      } else {
+      
+      try {
         obj = patch._createObject(proto, nodeData.args || [])
+      } catch (err) {
+        if (err instanceof errors.UnknownObjectError) 
+          return errorList.push([ err.message, err ])
+        else throw err
       }
-      if (proto === 'pd') Pd._preparePatch(obj, nodeData.subpatch)
+
+      if (obj.type == 'array' && nodeData.data)
+        obj.setData(new Float32Array(nodeData.data), true)
+
+      if (proto === 'pd' || proto === 'graph') 
+        Pd._preparePatch(obj, nodeData.subpatch)
       createdObjs[nodeData.id] = obj
     })
 
@@ -163,14 +178,33 @@ var Pd = module.exports = {
     patchData.connections.forEach(function(conn) {
       var sourceObj = createdObjs[conn.source.id]
         , sinkObj = createdObjs[conn.sink.id]
-      if (!sourceObj || !sinkObj) throw new Error('invalid connection')
-      sourceObj.o(conn.source.port).connect(sinkObj.i(conn.sink.port))
+      if (!sourceObj || !sinkObj) {
+        var errMsg = 'invalid connection ' + conn.source.id 
+          + '.* -> ' + conn.sink.id + '.*'
+        return errorList.push([ errMsg, new Error(errMsg) ])
+      }
+      try {
+        sourceObj.o(conn.source.port).connect(sinkObj.i(conn.sink.port))
+      } catch (err) {
+        if (err instanceof errors.InvalidPortletError) {
+          var errMsg = 'invalid connection ' + conn.source.id + '.' + conn.source.port 
+            + ' -> ' + conn.sink.id + '.' + conn.sink.port
+          return errorList.push([ errMsg, err ])
+        }
+      }
     })
+
+    // Binding patch data to the prepared patch
+    patch.patchData = patchData
+
+    // Handling errors
+    if (errorList.length) throw new errors.PatchLoadError(errorList)
   },
 
   core: {
     PdObject: PdObject,
-    portlets: portlets
+    portlets: portlets,
+    errors: errors
   },
 
   // Exposing this mostly for testing

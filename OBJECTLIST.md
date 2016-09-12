@@ -7,14 +7,19 @@
 - -~
 - /
 - abs
+- adc~
 - array
 - atan
+- atan2
 - bng
 - bp~
 - change
+- clip
 - clip~
 - cos
 - dac~
+- dbtopow
+- dbtorms
 - del
 - delay
 - delread~
@@ -23,6 +28,8 @@
 - f
 - float
 - floatatom
+- ftom
+- graph
 - hip~
 - hradio
 - hsl
@@ -34,7 +41,9 @@
 - loadbang
 - log
 - lop~
+- max
 - metro
+- min
 - mod
 - moses
 - msg
@@ -48,10 +57,12 @@
 - pd
 - phasor~
 - pow
+- powtodb
 - print
 - r
 - random
 - receive
+- rmstodb
 - s
 - samplerate~
 - sel
@@ -63,6 +74,7 @@
 - spigot
 - sqrt
 - square~
+- swap
 - symbolatom
 - t
 - table
@@ -80,3 +92,4 @@
 - vradio
 - vsl
 - vu
+- wrap

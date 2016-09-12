@@ -1,4 +1,5 @@
 [![Build Status](https://travis-ci.org/sebpiq/WebPd.png)](https://travis-ci.org/sebpiq/WebPd)
+[![Dependency status](https://david-dm.org/sebpiq/WebPd.svg)](https://david-dm.org/sebpiq/WebPd)
 
 WebPd
 =====
@@ -117,16 +118,24 @@ Python comes bundled with such a web server. Open a terminal, navigate to the fo
 
 Alternatively, if you prefer node, you may want to install the handy [`http-server`](https://github.com/indexzero/http-server#readme) command-line utility.
 
-### Other patches have worked before but this one doesn't
+### One of my patches doesn't work in WebPd
 
 WebPd has a few [limitations](#list-of-implemented-objects-and-other-limitations). For example, some of the Pd objects are not available. Open your browser's developer console (`ctrl+shift+i` on firefox and chrome for linux or windows), and you should get a clear error message telling you what is wrong. If the error is unclear, or if there is no error, it might be a bug with WebPd. In that case, it would be great if you could [submit a bug report](#submitting-a-bug-report).
+
+Here is a non-exhaustive list of other limitations and inconsistencies with Pure Data :
+
+- Pd system messages, such as the widely used `[;pd dsp 1(` , are not implemented
+- `[phasor~]` is not a real, perfect, phasor. You shouldn't use it to read from an array for example.
+- `[phasor~]` inlet 2 (used to set the phase) is not implemented
 
 
 ### A patch that works fine on the desktop doesn't seem to work on mobile
 
 WebPd uses Web Audio API, and as it happens, running Web Audio API on mobile is not always easy. First, make sure that you use a browser **that does support Web Audio API**. For example the default Android browser does not, and so on Android you have to use Chrome or Firefox. 
 
-On iPhone and iPad, things are even trickier. For security reasons, audio is blocked by iOS, unless you start it in direct answer to a user action (click, touch, ...). So to get sound with WebPd, you will need to do exactly that and for example call `Pd.start` in a button's `onclick` handler : `onclick="Pd.start()"`.
+On iPhone and iPad, things are even trickier. For security reasons, audio is blocked by iOS, unless you start it in direct answer to a user action (click, touch, ...). So to get sound with WebPd, you will need to do exactly that and for example call `Pd.start` in a button's `ontouchend` handler : `ontouchend="Pd.start()"`. You can copy the [code to launch WebPd's examples](https://github.com/sebpiq/WebPd/blob/master/examples/assets/examples.js) to get around this, and work in all browsers.
+
+Also some objects such as `[adc~]` depend on features which are not available in all browsers and on all platforms. For example `[adc~]` won't work on iOS.  
 
 
 List of implemented objects and other limitations
@@ -150,11 +159,50 @@ Please try to include as much information as possible. Also try to include code,
 API
 -----
 
+You can use WebPd API to create patches, add objects, connect them, disconnect them, etc ... with JavaScript. Something called "dynamic patching" in Pure Data. Here is a quick example :
+
+```javascript
+Pd.start()
+var patch = Pd.createPatch()                  // Create an empty patch 
+  , osc = patch.createObject('osc~', [440])   // Create an [osc~ 440]
+  , dac = patch.createObject('dac~')          // Create a [dac~]
+osc.o(0).connect(dac.i(0))                    // Connect outlet of [osc~] to left inlet of [dac~]
+osc.o(0).connect(dac.i(1))                    // Connect outlet of [osc~] to right inlet of [dac~]
+osc.i(0).message([330])                       // Send frequency of [osc~] to 330Hz
+```
+
+You can also use the API to integrate WebPd with pure Web Audio code. For example : 
+
+```javascript
+var patch = Pd.loadPatch(patchStr)            // We assume this patch has an [outlet~] object
+  , gain = Pd.getAudio().context.createGain() // We create a web audio API GainNode
+patch.o(0).getOutNode().connect(gain)         // Connect the output 0 of the patch to our audio node
+``` 
+
+Below you can find a (mostly) complete documentation of the WebPd API. Please note that dynamic patching with WebPd is still experimental, so you might encounter some bugs. If you do, please report them to in the [issue tracker](https://github.com/sebpiq/WebPd/issues).
+
+
 ### Pd
+
+#### Pd.start()
+
+Starts WebPd DSP.
+
+#### Pd.isStarted()
+
+Returns `true` is WebPd DSP is started, `false` otherwise.
+
+#### Pd.stop()
+
+Stops WebPd DSP.
 
 #### Pd.loadPatch(patchStr)
 
 Loads a Pd patch, and returns a `Patch` object. `patchStr` is the whole contents of a Pd file (and not only a file name).
+
+#### Pd.createPatch()
+
+Creates and returns an empty `Patch` object.
 
 #### Pd.receive(name, callback)
 
@@ -162,7 +210,7 @@ Receives messages from named senders within a patch (e.g. `[send someName]`). Ex
 
 ```javascript
 Pd.receive('someName', function(args) {
-    console.log('received a message from "someName" : ', args)
+  console.log('received a message from "someName" : ', args)
 })
 ```
 
@@ -173,6 +221,67 @@ Sends messages from JavaScript to a named receiver within a patch (e.g. `[receiv
 ```javascript
 Pd.send('someName', ['hello!'])
 ```
+
+#### Pd.getAudio()
+
+Returns the audio driver used by WebPd on the current page. the returned object has an attribute `context` which is an instance of Web Audio API `AudioContext` used by WebPd in the current page to instantiate low-level audio nodes. This can be useful to integrate WebPd with pure Web Audio code.
+
+#### Pd.registerAbstraction(name, patchStr)
+
+Registers an abstraction to WebPd. See full example [there](https://github.com/sebpiq/WebPd/tree/master/examples/abstractions).
+
+#### Pd.registerExternal(name, customWebPdObject)
+
+Registers a custom object to WebPd. See full example [there](https://github.com/sebpiq/WebPd/tree/master/examples/external).
+
+
+### BaseNode
+
+This is the base class for all WebPd nodes, patches, dsp or glue objects.
+
+#### BaseNode.o(ind)
+
+Returns the outlet `ind` of the node. If `ind` is out of range, an error will be thrown. 
+
+#### BaseNode.i(ind)
+
+Returns the inlet `ind` of the node. If `ind` is out of range, an error will be thrown.
+
+
+### Patch
+
+#### Patch.createObject(name, args)
+
+Creates a new object of type `name` with arguments `args`. Example :
+
+```
+var triggerObject = patch.createObject('trigger', ['bang', 'float', 'float'])
+```
+
+
+### Portlet
+
+Base class for `Inlet` and `Outlet` objects.
+
+#### Portlet.connect(otherPortlet)
+
+Connects an inlet with and outlet. If they are already connected, nothing will happen.
+
+#### Portlet.disconnect(otherPortlet)
+
+Disconnects an inlet and an outlet. If they are not connected, nothing will happen.
+
+
+### Inlet
+
+#### Inlet.message(args)
+
+Sends a message to the inlet. `args` is a list of arguments. Example :
+
+```
+print.i(0).message(['hello'])
+```
+
 
 
 Instructions for building webpd.js
@@ -192,7 +301,7 @@ WebPd comes with two test suites.
 
 ### Automated tests
 
-The tests in `test/src` run on **node.js** using [mocha](http://mochajs.org/). To run them, simply execute the command `npm test`.
+The tests in `test/lib` run on **node.js** using [mocha](http://mochajs.org/). To run them, simply execute the command `npm test`.
 
 
 ### Browser tests
